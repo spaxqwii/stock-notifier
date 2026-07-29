@@ -1,0 +1,4 @@
+notification_email  = "you@example.com"
+slack_webhook_url   = "" # optional — paste your Slack incoming webhook URL here
+threshold_percent   = "5"
+schedule_expression = "rate(30 minutes)"

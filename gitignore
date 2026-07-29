@@ -1,0 +1,16 @@
+.terraform/
+*.tfstate
+*.tfstate.backup
+.terraform.lock.hcl
+terraform.tfvars
+build/
+lambda/*.dist-info/
+lambda/bin/
+lambda/*.egg-info/
+lambda/requests/
+lambda/bs4/
+lambda/soupsieve/
+lambda/urllib3/
+lambda/idna/
+lambda/certifi/
+lambda/charset_normalizer/
