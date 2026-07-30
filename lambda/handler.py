@@ -20,6 +20,7 @@ Environment variables expected (set via Terraform / Lambda config):
 """
 
 import os
+import re
 import json
 import logging
 from datetime import datetime, timezone
@@ -33,6 +34,12 @@ logger.setLevel(logging.INFO)
 
 NSE_URL = "https://afx.kwayisi.org/nse/"
 USER_AGENT = "Mozilla/5.0 (compatible; personal-devops-learning-project/1.0)"
+
+# Matches lines like "NMG12.70+9.96%" or "EGAD18.50-9.76%" from the
+# Top Gainers / Bottom Losers sections of the page.
+MOVER_LINE_PATTERN = re.compile(
+    r"([A-Z]{2,10})\s*(\d+\.\d{2})\s*([+-]\d+\.\d{2})%"
+)
 
 DYNAMODB_TABLE = os.environ.get("DYNAMODB_TABLE", "nse-stock-notifier")
 SNS_TOPIC_ARN = os.environ.get("SNS_TOPIC_ARN", "")
@@ -55,85 +62,61 @@ def fetch_nse_page():
 
 def parse_stocks(html):
     """
-    Parse the listed-companies table into a list of dicts:
-    [{ticker, name, volume, price, change_pct}, ...]
+    Parse the Top Gainers / Bottom Losers sections into a list of dicts:
+    [{ticker, price, change_pct}, ...]
 
-    NOTE: this depends on the current HTML structure of the page.
-    If the site changes its layout, this function is the only
-    thing that should need updating.
+    Why these sections instead of the full listed-companies table: in the
+    main table, volume and price digits sit directly adjacent with no
+    separator (e.g. "1,261,81085.75" = volume 1,261,810 + price 85.75),
+    which is genuinely ambiguous to split reliably in every case. The
+    Top Gainers / Bottom Losers sections instead give a clean
+    "TICKER + PRICE + ±CHANGE%" grouping per stock (e.g. "NMG12.70+9.96%",
+    though depending on the page's table markup, ticker/price/change may
+    render as separate cells with whitespace/newlines between them —
+    the regex below tolerates either).
+
+    NOTE: only the top ~30 gainers and ~15 losers appear here (not every
+    listed stock) — a reasonable trade-off for a threshold-alert use case,
+    but it means an obscure stock with a big move could theoretically be
+    missed if more than ~30/15 stocks cross the threshold on the same day.
+
+    If the site changes its layout, this function is the only thing that
+    should need updating.
     """
     soup = BeautifulSoup(html, "html.parser")
+    full_text = soup.get_text("\n")
+
+    lower_text = full_text.lower()
+    gainers_start = lower_text.find("top gainers")
+    losers_start = lower_text.find("bottom losers")
+    section_end = lower_text.find("monetary values")
+    if section_end == -1:
+        section_end = lower_text.find("listed companies")
+    if section_end == -1:
+        section_end = len(full_text)
+
+    if gainers_start == -1 and losers_start == -1:
+        logger.warning("Could not locate Top Gainers / Bottom Losers sections in the page")
+        return []
+
+    section_start = gainers_start if gainers_start != -1 else losers_start
+    section_text = full_text[section_start:section_end]
+
     stocks = []
+    seen_tickers = set()
+    for match in MOVER_LINE_PATTERN.finditer(section_text):
+        ticker, price_str, change_str = match.groups()
+        if ticker in seen_tickers:
+            continue  # avoid double-counting if a ticker appears more than once
+        seen_tickers.add(ticker)
 
-    # The listed-companies table is the one with Ticker/Name/Volume/Price/Change headers.
-    tables = soup.find_all("table")
-    target_table = None
-    for t in tables:
-        header_text = t.get_text(" ", strip=True).lower()
-        if "ticker" in header_text and "price" in header_text:
-            target_table = t
-            break
-
-    if target_table is None:
-        logger.warning("Could not locate the stock table in the page HTML")
-        return stocks
-
-    rows = target_table.find_all("tr")
-    for row in rows:
-        cells = row.find_all("td")
-        if len(cells) < 2:
-            continue  # header row or malformed row
-
-        raw_texts = [c.get_text(strip=True) for c in cells]
-        # Expected raw layout per row: Ticker, Name, Volume, Price, Change (Change may be split)
-        try:
-            ticker = raw_texts[0]
-            name = raw_texts[1]
-            # Volume/price/change formatting varies (some stocks show no trades today)
-            rest = " ".join(raw_texts[2:])
-            change_pct = extract_change_percent(rest)
-            price = extract_price(rest)
-
-            if ticker and price is not None:
-                stocks.append({
-                    "ticker": ticker,
-                    "name": name,
-                    "price": price,
-                    "change_pct": change_pct,
-                })
-        except (IndexError, ValueError):
-            continue
+        stocks.append({
+            "ticker": ticker,
+            "price": float(price_str),
+            "change_pct": float(change_str),  # the % sign means this IS the percentage already
+        })
 
     return stocks
-
-
-def extract_price(text):
-    """Pull the first plausible decimal number out of a cell's combined text."""
-    import re
-    match = re.search(r"(\d[\d,]*\.\d{2})", text)
-    if not match:
-        return None
-    return float(match.group(1).replace(",", ""))
-
-
-def extract_change_percent(text):
-    """
-    The page shows absolute change (e.g. +0.20) next to price, not percentage,
-    for the main table. We compute percentage change from price + absolute
-    change where possible; otherwise return 0.0.
-    """
-    import re
-    match = re.search(r"([+-]\d+\.\d{2})\s*$", text)
-    if not match:
-        return 0.0
-    change_abs = float(match.group(1))
-    price = extract_price(text)
-    if not price or price == change_abs:
-        return 0.0
-    prior_price = price - change_abs
-    if prior_price <= 0:
-        return 0.0
-    return round((change_abs / prior_price) * 100, 2)
 
 
 def get_last_alerted_change(ticker):
@@ -210,8 +193,8 @@ def handler(event, context):
 
         direction = "up" if change_pct > 0 else "down"
         message = (
-            f"{stock['name']} ({ticker}) is {direction} {abs(change_pct)}% "
-            f"today, now trading at KES {price}."
+            f"{ticker} is {direction} {abs(change_pct)}% today, "
+            f"now trading at KES {price}."
         )
         logger.info(f"Threshold crossed: {message}")
 
