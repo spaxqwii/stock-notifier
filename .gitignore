@@ -1,0 +1,25 @@
+# Terraform
+*.tfstate
+*.tfstate.*
+.terraform/
+.terraform.lock.hcl
+*.tfvars
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.so
+*.egg-info/
+venv/
+.env
+
+# Lambda build artifacts
+lambda/lambda/
+*.zip
+
+# Misc
+response.json
+nse_debug.html
+nse_stocks.json
+*.log

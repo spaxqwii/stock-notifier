@@ -1,0 +1,34 @@
+name: Terraform
+
+on:
+  push:
+    branches: [main]
+    paths: ['terraform/**']
+  pull_request:
+    paths: ['terraform/**']
+
+jobs:
+  terraform:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/GitHubActionsTerraformRole
+          aws-region: eu-west-1
+
+      - uses: hashicorp/setup-terraform@v3
+
+      - run: terraform -chdir=terraform init
+
+      - run: terraform -chdir=terraform plan -out=tfplan
+        if: github.event_name == 'pull_request'
+
+      - run: terraform -chdir=terraform apply -auto-approve tfplan
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'

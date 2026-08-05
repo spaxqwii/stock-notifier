@@ -1,0 +1,39 @@
+name: Deploy Lambda
+
+on:
+  push:
+    branches: [main]
+    paths: ['lambda/**']
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/GitHubActionsLambdaRole
+          aws-region: eu-west-1
+
+      - name: Package Lambda
+        run: |
+          cd lambda
+          pip install -r requirements.txt -t .
+          zip -r ../lambda.zip .
+
+      - name: Upload to S3
+        run: |
+          TIMESTAMP=$(date +%s)
+          aws s3 cp lambda.zip s3://nse-lambda-deployments/lambda-${TIMESTAMP}.zip
+          echo "S3_KEY=lambda-${TIMESTAMP}.zip" >> $GITHUB_ENV
+
+      - name: Update Lambda Function Code
+        run: |
+          aws lambda update-function-code \
+            --function-name nse-worker-lambda \
+            --s3-bucket nse-lambda-deployments \
+            --s3-key ${{ env.S3_KEY }}
