@@ -1,35 +1,28 @@
-variable "aws_region" {
-  description = "AWS region to deploy into"
+variable "project_name" {
+  description = "Project prefix for all AWS resources"
   type        = string
-  default     = "eu-west-1" # closest AWS region with a full free-tier service set
+  default     = "nse-stock-notifier"
+}
+
+variable "aws_region" {
+  description = "AWS region"
+  type        = string
+  default     = "eu-west-1"
 }
 
 variable "notification_email" {
-  description = "Email address to receive SNS alert notifications"
+  description = "Email for SNS alerts"
   type        = string
 }
 
 variable "slack_webhook_url" {
-  description = "Slack incoming webhook URL (leave blank to skip Slack notifications)"
+  description = "Slack incoming webhook URL"
   type        = string
   default     = ""
-  sensitive   = true
 }
 
 variable "threshold_percent" {
-  description = "Absolute percentage change that triggers a notification"
+  description = "Alert threshold %"
   type        = string
   default     = "5"
-}
-
-variable "schedule_expression" {
-  description = "EventBridge schedule expression for how often the scraper runs"
-  type        = string
-  default     = "rate(30 minutes)"
-}
-
-variable "project_name" {
-  description = "Used for naming/tagging all resources"
-  type        = string
-  default     = "nse-stock-notifier"
 }
