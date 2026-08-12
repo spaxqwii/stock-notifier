@@ -26,11 +26,13 @@ jobs:
       - uses: hashicorp/setup-terraform@v3
 
       - run: terraform -chdir=terraform init
-
-      - run: terraform -chdir=terraform plan -out=tfplan
+      
+      - name: Terraform plan
+        run: terraform -chdir=terraform plan -out=tfplan
         if: github.event_name == 'pull_request'
 
-      - run: terraform -chdir=terraform apply -auto-approve tfplan
+      - name: Terraform Apply
+        run: terraform -chdir=terraform apply -auto-approve
         if: github.ref == 'refs/heads/main' && github.event_name == 'push'
 
       - name: Debug ARN
