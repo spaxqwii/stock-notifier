@@ -24,21 +24,27 @@ provider "aws" {
   }
 }
 
-# ---------- DynamoDB: tracks last alerted change per ticker ----------
+# ---------- DynamoDB: per-day stock snapshots + alert tracking ----------
 resource "aws_dynamodb_table" "state" {
   name         = "${var.project_name}-state"
-  billing_mode = "PAY_PER_REQUEST" # no capacity to manage, stays within free tier at this scale
+  billing_mode = "PAY_PER_REQUEST"
   hash_key     = "ticker"
+  range_key    = "date"
 
   attribute {
     name = "ticker"
     type = "S"
   }
 
-  deletion_protection_enabled = false # must be false or `terraform destroy` will fail
+  attribute {
+    name = "date"
+    type = "S"
+  }
+
+  deletion_protection_enabled = false
 }
 
-# ---------- SNS: email notifications ----------
+# ---------- SNS: email notifications (backup channel) ----------
 resource "aws_sns_topic" "alerts" {
   name = "${var.project_name}-alerts"
 }
@@ -47,18 +53,16 @@ resource "aws_sns_topic_subscription" "email" {
   topic_arn = aws_sns_topic.alerts.arn
   protocol  = "email"
   endpoint  = var.notification_email
-  # NOTE: AWS will email you a confirmation link after apply — you must click it
-  # once before notifications will actually deliver.
 }
 
-# ---------- SSM Parameter Store: Slack webhook (kept out of code/state where possible) ----------
+# ---------- SSM Parameter Store: Slack webhook ----------
 resource "aws_ssm_parameter" "slack_webhook" {
   name  = "/${var.project_name}/slack-webhook-url"
   type  = "SecureString"
   value = var.slack_webhook_url != "" ? var.slack_webhook_url : "unset"
 }
 
-# ---------- IAM: least-privilege role for the Lambda ----------
+# ---------- IAM: Lambda execution role ----------
 resource "aws_iam_role" "lambda_role" {
   name = "${var.project_name}-lambda-role"
 
@@ -84,11 +88,9 @@ resource "aws_s3_bucket_lifecycle_configuration" "stock_data" {
   rule {
     id     = "expire-old-raw"
     status = "Enabled"
-
-    filter {}  # Applies to ALL objects in the bucket
-
+    filter {}
     expiration {
-      days = 365  # Keeps you under 5GB forever
+      days = 365
     }
   }
 }
@@ -113,7 +115,7 @@ resource "aws_iam_role_policy" "lambda_policy" {
       },
       {
         Effect   = "Allow"
-        Action   = ["dynamodb:GetItem", "dynamodb:PutItem"]
+        Action   = ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:Query"]
         Resource = aws_dynamodb_table.state.arn
       },
       {
@@ -136,48 +138,43 @@ resource "aws_iam_role_policy" "lambda_policy" {
 }
 
 # ---------- Lambda packaging ----------
-# NOTE: requests + beautifulsoup4 aren't in the standard Lambda runtime, so they
-# need to be packaged into the deployment zip (or a Lambda layer). This assumes
-# you've run `pip install -r lambda/requirements.txt -t lambda/` before `terraform apply`,
-# so those libraries sit alongside handler.py in the zipped folder.
 data "archive_file" "lambda_zip" {
   type        = "zip"
-  source_dir  = "${path.module}/lambda"
+  source_dir  = "${path.module}/../lambda"
   output_path = "${path.module}/build/lambda.zip"
 }
 
 resource "aws_lambda_function" "scraper" {
   function_name    = "${var.project_name}-scraper"
   role             = aws_iam_role.lambda_role.arn
-  handler          = "handler.handler"
+  handler          = "handler.lambda_handler"
   runtime          = "python3.12"
   timeout          = 60
   memory_size      = 256
   filename         = data.archive_file.lambda_zip.output_path
   source_code_hash = data.archive_file.lambda_zip.output_base64sha256
 
-   tracing_config {
+  tracing_config {
     mode = "Active"
   }
 
   environment {
     variables = {
-      DYNAMODB_TABLE       = aws_dynamodb_table.state.name
-      SNS_TOPIC_ARN        = aws_sns_topic.alerts.arn
-      SLACK_WEBHOOK_PARAM  = aws_ssm_parameter.slack_webhook.name
-      THRESHOLD_PERCENT    = var.threshold_percent
-      DATA_BUCKET = aws_s3_bucket.stock_data.id
+      DYNAMODB_TABLE      = aws_dynamodb_table.state.name
+      SNS_TOPIC_ARN       = aws_sns_topic.alerts.arn
+      SLACK_WEBHOOK_PARAM = aws_ssm_parameter.slack_webhook.name
+      THRESHOLD_PERCENT   = var.threshold_percent
+      S3_BUCKET           = aws_s3_bucket.stock_data.id
     }
   }
 }
 
 resource "aws_cloudwatch_log_group" "lambda_logs" {
   name              = "/aws/lambda/${aws_lambda_function.scraper.function_name}"
-  retention_in_days = 7 # keep log storage small and within free tier
+  retention_in_days = 7
 }
 
-
-# ---------- CloudWatch Alarm: notify if the Lambda errors ----------
+# ---------- CloudWatch Alarm: Lambda errors ----------
 resource "aws_cloudwatch_metric_alarm" "lambda_errors" {
   alarm_name          = "${var.project_name}-lambda-errors"
   comparison_operator = "GreaterThanThreshold"
@@ -194,7 +191,7 @@ resource "aws_cloudwatch_metric_alarm" "lambda_errors" {
   }
 }
 
-# ---------- SQS ----------
+# ---------- SQS: decouple laptop scraper from Lambda ----------
 resource "aws_sqs_queue" "scrape_queue" {
   name                       = "${var.project_name}-scrape-queue"
   visibility_timeout_seconds = 60
@@ -213,15 +210,14 @@ resource "aws_sqs_queue_redrive_policy" "scrape_queue" {
   })
 }
 
-
-# ---------- Worker: SQS trigger ----------
+# ---------- SQS trigger for Lambda ----------
 resource "aws_lambda_event_source_mapping" "worker_sqs" {
   event_source_arn = aws_sqs_queue.scrape_queue.arn
   function_name    = aws_lambda_function.scraper.arn
   batch_size       = 1
 }
 
-# Add SQS permissions to existing worker role
+# ---------- SQS permissions for Lambda ----------
 resource "aws_iam_role_policy" "lambda_sqs" {
   name = "${var.project_name}-lambda-sqs"
   role = aws_iam_role.lambda_role.id

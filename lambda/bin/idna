@@ -1,4 +1,4 @@
-#!/usr/bin/python3
+#!/home/spax110/workstuff/kubernetes/stock-notifier/venv/bin/python
 import sys
 from idna.cli import main
 if __name__ == '__main__':

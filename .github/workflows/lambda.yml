@@ -34,6 +34,6 @@ jobs:
       - name: Update Lambda Function Code
         run: |
           aws lambda update-function-code \
-            --function-name nse-worker-lambda \
+            --function-name nse-stock-notifier-scraper \
             --s3-bucket nse-lambda-deployments \
             --s3-key ${{ env.S3_KEY }}
