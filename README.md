@@ -197,3 +197,4 @@ Verify in AWS Console that Lambda, SQS, S3, DynamoDB, and EventBridge rules are 
 ## Notes on the Scraper
 
 The NSE data source (`afx.kwayisi.org/nse/`) serves HTML with **unclosed table tags** (`<td>` without `</td>`). The scraper handles this by splitting rows on `<tr>` and cells on `<td>` directly, then stripping nested tags. If the site changes layout, only the cell extraction regex in `nse-scraper/local_scraper.py` needs updating.
+# Wed Aug 12 08:24:11 AM EAT 2026
