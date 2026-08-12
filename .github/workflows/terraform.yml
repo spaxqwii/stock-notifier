@@ -32,3 +32,6 @@ jobs:
 
       - run: terraform -chdir=terraform apply -auto-approve tfplan
         if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+
+      - name: Debug ARN
+        run: echo "arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/GitHubActionsTerraformRole"
